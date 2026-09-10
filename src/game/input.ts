@@ -1,45 +1,26 @@
 export class InputManager {
   keys = new Set<string>();
-  mouseDeltaX = 0;
-  mouseDeltaY = 0;
-  mouseLocked = false;
-  attackPressed = false;
-  interactPressed = false;
+  private prevKeys = new Set<string>();
+
+  moveX = 0;
+  moveY = 0;
   sprint = false;
 
-  // Mobile joystick
-  moveX = 0;
-  moveZ = 0;
-  mobileAttack = false;
-  mobileInteract = false;
+  private attackQueued = false;
+  private interactQueued = false;
 
   private joystickActive = false;
   private joystickOrigin = { x: 0, y: 0 };
   private joystickPointerId: number | null = null;
 
-  constructor(private canvas: HTMLCanvasElement) {
+  constructor() {
     window.addEventListener('keydown', (e) => {
       this.keys.add(e.code);
-      if (['KeyI', 'KeyM', 'Escape'].includes(e.code)) e.preventDefault();
+      if (['KeyI', 'KeyM', 'Escape', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) {
+        e.preventDefault();
+      }
     });
     window.addEventListener('keyup', (e) => this.keys.delete(e.code));
-
-    this.canvas.addEventListener('click', () => {
-      if (!this.isMobile() && !this.mouseLocked) {
-        this.canvas.requestPointerLock();
-      }
-    });
-
-    document.addEventListener('pointerlockchange', () => {
-      this.mouseLocked = document.pointerLockElement === this.canvas;
-    });
-
-    document.addEventListener('mousemove', (e) => {
-      if (this.mouseLocked) {
-        this.mouseDeltaX += e.movementX;
-        this.mouseDeltaY += e.movementY;
-      }
-    });
 
     this.setupMobileJoystick();
     this.setupMobileButtons();
@@ -50,31 +31,52 @@ export class InputManager {
   }
 
   update(): void {
-    this.attackPressed = this.keys.has('KeyJ') || this.mobileAttack;
-    this.interactPressed = this.keys.has('KeyE') || this.mobileInteract;
-    this.sprint = this.keys.has('ShiftLeft') || this.keys.has('ShiftRight');
-
     if (!this.isMobile()) {
       let x = 0;
-      let z = 0;
-      if (this.keys.has('KeyW') || this.keys.has('ArrowUp')) z -= 1;
-      if (this.keys.has('KeyS') || this.keys.has('ArrowDown')) z += 1;
+      let y = 0;
+      if (this.keys.has('KeyW') || this.keys.has('ArrowUp')) y -= 1;
+      if (this.keys.has('KeyS') || this.keys.has('ArrowDown')) y += 1;
       if (this.keys.has('KeyA') || this.keys.has('ArrowLeft')) x -= 1;
       if (this.keys.has('KeyD') || this.keys.has('ArrowRight')) x += 1;
-      const len = Math.hypot(x, z);
+      const len = Math.hypot(x, y);
       this.moveX = len > 0 ? x / len : 0;
-      this.moveZ = len > 0 ? z / len : 0;
+      this.moveY = len > 0 ? y / len : 0;
     }
 
-    this.mobileAttack = false;
-    this.mobileInteract = false;
+    this.sprint = this.keys.has('ShiftLeft') || this.keys.has('ShiftRight');
   }
 
-  consumeMouseDelta(): { x: number; y: number } {
-    const d = { x: this.mouseDeltaX, y: this.mouseDeltaY };
-    this.mouseDeltaX = 0;
-    this.mouseDeltaY = 0;
-    return d;
+  /** Edge-triggered attack (J key or mobile button) */
+  consumeAttack(): boolean {
+    const keyEdge = this.keys.has('KeyJ') && !this.prevKeys.has('KeyJ');
+    const pressed = keyEdge || this.attackQueued;
+    this.attackQueued = false;
+    return pressed;
+  }
+
+  /** Edge-triggered interact (E key or mobile button) */
+  consumeInteract(): boolean {
+    const keyEdge = this.keys.has('KeyE') && !this.prevKeys.has('KeyE');
+    const pressed = keyEdge || this.interactQueued;
+    this.interactQueued = false;
+    return pressed;
+  }
+
+  /** Held interact for dialogue advance (E or click) */
+  consumeInteractHeld(): boolean {
+    const pressed = this.keys.has('KeyE') || this.interactQueued;
+    this.interactQueued = false;
+    return pressed;
+  }
+
+  /** Edge-triggered panel keys */
+  consumeKey(code: string): boolean {
+    const pressed = this.keys.has(code) && !this.prevKeys.has(code);
+    return pressed;
+  }
+
+  endFrame(): void {
+    this.prevKeys = new Set(this.keys);
   }
 
   private setupMobileJoystick(): void {
@@ -85,6 +87,7 @@ export class InputManager {
     const maxDist = 45;
 
     zone.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
       this.joystickActive = true;
       this.joystickPointerId = e.pointerId;
       this.joystickOrigin = { x: e.clientX, y: e.clientY };
@@ -101,7 +104,7 @@ export class InputManager {
       const cy = Math.sin(angle) * dist;
       stick.style.transform = `translate(calc(-50% + ${cx}px), calc(-50% + ${cy}px))`;
       this.moveX = cx / maxDist;
-      this.moveZ = cy / maxDist;
+      this.moveY = cy / maxDist;
     });
 
     const resetJoystick = (e: PointerEvent) => {
@@ -109,7 +112,7 @@ export class InputManager {
       this.joystickActive = false;
       this.joystickPointerId = null;
       this.moveX = 0;
-      this.moveZ = 0;
+      this.moveY = 0;
       stick.style.transform = 'translate(-50%, -50%)';
     };
 
@@ -118,13 +121,21 @@ export class InputManager {
   }
 
   private setupMobileButtons(): void {
-    document.getElementById('btn-attack')?.addEventListener('pointerdown', (e) => {
-      e.preventDefault();
-      this.mobileAttack = true;
-    });
-    document.getElementById('btn-interact')?.addEventListener('pointerdown', (e) => {
-      e.preventDefault();
-      this.mobileInteract = true;
-    });
+    const bind = (id: string, queue: 'attack' | 'interact') => {
+      const btn = document.getElementById(id);
+      if (!btn) return;
+      btn.addEventListener('pointerdown', (e) => {
+        e.preventDefault();
+        if (queue === 'attack') this.attackQueued = true;
+        else this.interactQueued = true;
+      });
+      btn.addEventListener('touchstart', (e) => {
+        e.preventDefault();
+        if (queue === 'attack') this.attackQueued = true;
+        else this.interactQueued = true;
+      }, { passive: false });
+    };
+    bind('btn-attack', 'attack');
+    bind('btn-interact', 'interact');
   }
 }
