@@ -29,25 +29,10 @@ export interface DialogueLine {
   text: string;
 }
 
-export interface EnemyData {
-  id: string;
-  hp: number;
-  maxHp: number;
-  damage: number;
-  speed: number;
-  isBoss: boolean;
-  aggroRange: number;
-  attackRange: number;
-  attackCooldown: number;
-  lastAttack: number;
-  dead: boolean;
-  respawn?: boolean;
-}
-
-export interface HerbSpot {
-  id: string;
-  collected: boolean;
+export interface FloatingText {
   x: number;
-  z: number;
-  mesh?: { visible: boolean };
+  y: number;
+  text: string;
+  life: number;
+  color: string;
 }

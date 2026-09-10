@@ -1,5 +1,6 @@
 import type { GameState } from './state';
 import type { DialogueLine, GamePhase } from './types';
+import { drawMinimap, type Tile } from './map';
 
 export class UIManager {
   private root: HTMLElement;
@@ -29,7 +30,7 @@ export class UIManager {
       <div id="title-screen" class="screen-overlay">
         <h1>Echoes of the Grove</h1>
         <h2>Ecos da Clareira</h2>
-        <p>Um herói desperta junto a uma clareira corrompida. O Ancião pede ajuda para purificar a Pedra-Coração nas ruínas. Derrote o Guardião e restaure o bosque!</p>
+        <p>Um herói desperta junto a uma clareira corrompida. Explore o mapa top-down, fale com NPCs, complete missões e purifique a Pedra-Coração nas ruínas ao norte!</p>
         <button id="btn-start" class="btn-primary">Iniciar Jornada</button>
       </div>
 
@@ -65,7 +66,6 @@ export class UIManager {
             <button id="btn-fullscreen" class="hud-btn">⛶ Tela Cheia</button>
           </div>
         </div>
-        <div id="crosshair"></div>
         <div id="interact-prompt" class="hidden">[E] Interagir</div>
       </div>
 
@@ -167,72 +167,17 @@ export class UIManager {
     setTimeout(() => el.classList.remove('show'), 150);
   }
 
-  drawMap(
+  drawMinimapFromTiles(
+    tiles: Tile[][],
     playerX: number,
-    playerZ: number,
-    npcs: { x: number; z: number; color: string }[],
-    enemies: { x: number; z: number; boss?: boolean }[]
+    playerY: number,
+    npcs: { x: number; y: number; color: string }[],
+    enemies: { x: number; y: number; boss?: boolean }[]
   ): void {
     const canvas = document.getElementById('map-canvas') as HTMLCanvasElement | null;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
-
-    const w = canvas.width;
-    const h = canvas.height;
-    ctx.fillStyle = '#1a2a1a';
-    ctx.fillRect(0, 0, w, h);
-
-    const scale = 1.8;
-    const ox = w / 2;
-    const oz = h * 0.55;
-
-    const toScreen = (x: number, z: number) => ({
-      sx: ox + x * scale,
-      sz: oz + z * scale,
-    });
-
-    // Grove
-    ctx.fillStyle = '#2d4a2d';
-    ctx.fillRect(ox - 70 * scale, oz - 10 * scale, 140 * scale, 60 * scale);
-
-    // Path
-    ctx.fillStyle = '#4a4035';
-    ctx.fillRect(ox - 4 * scale, oz - 50 * scale, 8 * scale, 80 * scale);
-
-    // Ruins
-    ctx.fillStyle = '#3a3530';
-    ctx.fillRect(ox - 20 * scale, oz - 110 * scale, 40 * scale, 40 * scale);
-
-    // Heartstone
-    const hs = toScreen(0, -92);
-    ctx.fillStyle = '#aa66ff';
-    ctx.beginPath();
-    ctx.arc(hs.sx, hs.sz, 5, 0, Math.PI * 2);
-    ctx.fill();
-
-    for (const npc of npcs) {
-      const p = toScreen(npc.x, npc.z);
-      ctx.fillStyle = npc.color;
-      ctx.fillRect(p.sx - 3, p.sz - 3, 6, 6);
-    }
-
-    for (const e of enemies) {
-      if (e.boss) continue;
-      const p = toScreen(e.x, e.z);
-      ctx.fillStyle = '#888';
-      ctx.fillRect(p.sx - 2, p.sz - 2, 4, 4);
-    }
-
-    const pp = toScreen(playerX, playerZ);
-    ctx.fillStyle = '#4488cc';
-    ctx.beginPath();
-    ctx.arc(pp.sx, pp.sz, 5, 0, Math.PI * 2);
-    ctx.fill();
-
-    ctx.fillStyle = '#7cfc7c';
-    ctx.font = '11px sans-serif';
-    ctx.fillText('Clareira', ox - 60 * scale, oz + 55 * scale);
-    ctx.fillText('Ruínas', ox - 15 * scale, oz - 115 * scale);
+    drawMinimap(ctx, tiles, playerX, playerY, npcs, enemies);
   }
 }

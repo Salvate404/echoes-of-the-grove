@@ -1,6 +1,6 @@
 # Echoes of the Grove
 
-Browser-based 3D third-person RPG prototype (Zelda-like feel). Built with **Vite + TypeScript + Three.js**.
+2D top-down Zelda-like RPG for browser (desktop + mobile). Built with **Vite + TypeScript + Canvas 2D**.
 
 ## Quick start
 
@@ -9,20 +9,19 @@ npm install
 npm run dev
 ```
 
-Open the URL shown in the terminal (default: http://localhost:5173) in Chrome or another modern browser.
+Open the URL shown in the terminal (default: http://localhost:5173).
 
-Build for static deployment:
+Static deploy (Vercel, Netlify, etc.):
 
 ```bash
 npm run build
-npm run preview
 ```
 
-Output goes to `dist/` and can be hosted on any static file server (Netlify, GitHub Pages, etc.).
+Output in `dist/`.
 
 ## Story
 
-You wake near a corrupted grove. The Elder asks you to purify the **Heartstone** in the northern ruins by defeating its guardian. Side quests help you grow stronger before the final fight.
+You wake in a corrupted grove. The **Ancião** asks you to purify the **Pedra-Coração** in the northern ruins. Side quests with the **Curandeira** (herbs → +30 HP) and wolf hunting (+10 damage) help you prepare for the **Guardião** boss.
 
 ## Controls
 
@@ -30,15 +29,16 @@ You wake near a corrupted grove. The Elder asks you to purify the **Heartstone**
 
 | Key | Action |
 |-----|--------|
-| **W A S D** | Move |
-| **Mouse** | Look around (click canvas to lock pointer) |
+| **W A S D** or **Arrow keys** | Move |
 | **Shift** | Sprint (uses stamina) |
 | **J** | Attack |
 | **E** | Interact (NPCs, herbs, Heartstone) |
-| **I** | Inventory panel |
-| **M** | Map panel |
+| **I** | Inventory |
+| **M** | Map |
 | **Esc** | Close panels |
-| **⛶ Tela Cheia** | Fullscreen toggle (HUD button) |
+| **⛶ Tela Cheia** | Fullscreen |
+
+No pointer lock required — movement works immediately after starting.
 
 ### Mobile (landscape recommended)
 
@@ -51,24 +51,16 @@ You wake near a corrupted grove. The Elder asks you to purify the **Heartstone**
 
 ## Gameplay loop
 
-1. **Title screen** → click *Iniciar Jornada*
-2. Talk to the **Ancião** (Elder) at the camp (west side of spawn) to start the main quest
-3. Talk to **Curandeira Mira** (healer hut, east) for the herb side quest — collect 3 green herbs (+30 max HP)
-4. Defeat **3 wolves** in the grove for a weapon upgrade (+10 damage, blessed sword)
-5. Follow the path **north** to the ruins; the **Guardian boss** spawns when you approach
-6. Defeat the boss, then interact with the **Heartstone** to win
+1. **Iniciar Jornada** on the title screen
+2. Talk to **Ancião Thalen** (camp, west) → main quest
+3. Talk to **Curandeira Mira** (hut, east) → collect 3 green herbs
+4. Defeat 3 **wolves** for a weapon upgrade
+5. Walk **north** along the path to the ruins → boss spawns
+6. Defeat the **Guardião** → interact with the **Pedra-Coração** → victory
 
-## HUD
+## Tech
 
-- **HP** and **Stamina** bars (top-left)
-- **Quest tracker** (top-center) — active quests and progress
-- **Inventory** (I) — items and equipped weapon
-- **Map** (M) — grove, path, ruins, and your position
-
-## Tech stack
-
-- [Vite](https://vitejs.dev/) — dev server & bundler
-- [TypeScript](https://www.typescriptlang.org/)
-- [Three.js](https://threejs.org/) — WebGL 3D rendering
-
-No external assets; all geometry is procedural low-poly primitives.
+- **Vite** — bundler & dev server
+- **TypeScript**
+- **Canvas 2D** — rendering with procedural pixel-art sprites
+- Tilemap collision, no Three.js or WebGL dependency

@@ -8,7 +8,7 @@ export class GameState {
     stamina: 100,
     maxStamina: 100,
     damage: 12,
-    speed: 8,
+    speed: 130,
   };
 
   inventory: InventoryItem[] = [
@@ -100,10 +100,6 @@ export class GameState {
     return this.stats.hp <= 0;
   }
 
-  heal(amount: number): void {
-    this.stats.hp = Math.min(this.stats.maxHp, this.stats.hp + amount);
-  }
-
   useStamina(amount: number): boolean {
     if (this.stats.stamina < amount) return false;
     this.stats.stamina -= amount;
@@ -125,7 +121,7 @@ export class GameState {
       stamina: 100,
       maxStamina: 100,
       damage: 12,
-      speed: 8,
+      speed: 130,
     };
     this.inventory = [{ id: 'sword', name: 'Espada enferrujada', count: 1 }];
     this.quests.forEach((q) => {

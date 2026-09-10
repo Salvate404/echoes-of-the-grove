@@ -1,57 +1,74 @@
-import * as THREE from 'three';
 import { GameState } from './state';
 import { InputManager } from './input';
 import { UIManager } from './ui';
-import { buildWorld, resolveCollision } from './world';
+import {
+  MAP_W,
+  MAP_H,
+  TILE_SIZE,
+  buildMap,
+  resolveMovement,
+  drawMapLayer,
+  type Prop,
+  type Tile,
+} from './map';
 import {
   PlayerEntity,
   EnemyEntity,
   NPCEntity,
-  createWolfPack,
+  createHerbs,
+  createWolves,
   createBoss,
+  getAttackHitbox,
+  aabbOverlap,
+  type HerbSpot,
+  type Direction,
 } from './entities';
-import type { DialogueLine, HerbSpot } from './types';
+import { drawSprite, getSprite } from './sprites';
+import type { DialogueLine, FloatingText } from './types';
+
+const SPAWN_TX = 30;
+const SPAWN_TY = 72;
 
 export class Game {
-  private renderer: THREE.WebGLRenderer;
-  private camera: THREE.PerspectiveCamera;
-  private clock = new THREE.Clock();
+  private canvas: HTMLCanvasElement;
+  private ctx: CanvasRenderingContext2D;
+  private lastTime = 0;
+  private animId = 0;
 
   private state = new GameState();
-  private input: InputManager;
-  private ui: UIManager;
+  private input = new InputManager();
+  private ui = new UIManager('ui-root');
 
-  private world = buildWorld();
-  private player = new PlayerEntity();
-  private npcs: NPCEntity[] = [];
-  private enemies: EnemyEntity[] = [];
+  private mapData = buildMap();
+  private tiles: Tile[][] = this.mapData.tiles;
+  private props: Prop[] = this.mapData.props;
+
+  private player = new PlayerEntity(
+    SPAWN_TX * TILE_SIZE + TILE_SIZE / 2,
+    SPAWN_TY * TILE_SIZE + TILE_SIZE / 2
+  );
+  private npcs: NPCEntity[] = [
+    new NPCEntity('elder', 'Ancião Thalen', 26, 68, TILE_SIZE),
+    new NPCEntity('healer', 'Curandeira Mira', 34, 68, TILE_SIZE),
+  ];
+  private enemies: EnemyEntity[] = createWolves();
+  private herbs: HerbSpot[] = createHerbs();
   private boss: EnemyEntity | null = null;
-  private herbSpots: HerbSpot[] = [];
-
-  private cameraYaw = 0;
-  private cameraPitch = 0.3;
-  private cameraDistance = 8;
 
   private dialogueQueue: DialogueLine[] = [];
   private dialogueIndex = 0;
-  private interactTarget: string | null = null;
   private attackCooldown = 0;
   private interactCooldown = 0;
   private bossSpawned = false;
   private heartstoneActive = false;
-
-  private animId = 0;
+  private floatingTexts: FloatingText[] = [];
+  private heartstonePulse = 0;
 
   constructor(canvas: HTMLCanvasElement) {
-    this.input = new InputManager(canvas);
-    this.ui = new UIManager('ui-root');
-
-    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-
-    this.camera = new THREE.PerspectiveCamera(60, 1, 0.1, 200);
+    this.canvas = canvas;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) throw new Error('2D context unavailable');
+    this.ctx = ctx;
 
     this.ui.setCallbacks({
       onStart: () => this.startGame(),
@@ -61,63 +78,34 @@ export class Game {
 
     window.addEventListener('resize', () => this.onResize());
     this.onResize();
-
-    this.setupScene();
-    this.loop();
-  }
-
-  private setupScene(): void {
-    this.world.scene.add(this.player.mesh);
-
-    this.npcs.push(new NPCEntity('elder', 'Ancião Thalen', this.world.elderPos, 0x5a4a8a));
-    this.npcs.push(new NPCEntity('healer', 'Curandeira Mira', this.world.healerPos, 0x6a8a5a));
-    for (const npc of this.npcs) {
-      this.world.scene.add(npc.mesh);
-    }
-
-    for (const w of createWolfPack()) {
-      const enemy = new EnemyEntity(w.id, w.pos);
-      this.enemies.push(enemy);
-      this.world.scene.add(enemy.mesh);
-    }
-
-    this.herbSpots = this.world.herbSpots.map((h) => ({ ...h }));
+    this.loop(0);
   }
 
   private startGame(): void {
     this.state.reset();
     this.state.phase = 'playing';
-    this.player.position.set(0, 0, 25);
-    this.player.yaw = Math.PI;
+    this.player.x = SPAWN_TX * TILE_SIZE + TILE_SIZE / 2;
+    this.player.y = SPAWN_TY * TILE_SIZE + TILE_SIZE / 2;
+    this.player.dir = 'up';
     this.player.attackTimer = 0;
     this.player.invincibleTimer = 0;
     this.player.isAttacking = false;
-    this.cameraYaw = Math.PI;
-    this.cameraPitch = 0.3;
+
     this.bossSpawned = false;
+    this.boss = null;
     this.heartstoneActive = false;
     this.dialogueQueue = [];
-    this.interactTarget = null;
+    this.floatingTexts = [];
 
     for (const e of this.enemies) {
       e.data.dead = false;
       e.data.hp = e.data.maxHp;
-      e.position.copy(e.homePosition);
-      e.syncMesh();
+      e.x = e.homeX;
+      e.y = e.homeY;
+      e.hitFlash = 0;
     }
 
-    for (const h of this.herbSpots) {
-      h.collected = false;
-    }
-    for (const h of this.herbSpots) {
-      if (h.mesh) h.mesh.visible = true;
-    }
-
-    const existingBoss = this.boss;
-    if (existingBoss) {
-      this.world.scene.remove(existingBoss.mesh);
-    }
-    this.boss = null;
+    for (const h of this.herbs) h.collected = false;
 
     this.ui.setPhase('playing');
     this.ui.updateHUD(this.state);
@@ -132,19 +120,17 @@ export class Game {
   }
 
   private onResize(): void {
-    const w = window.innerWidth;
-    const h = window.innerHeight;
-    this.renderer.setSize(w, h);
-    this.camera.aspect = w / h;
-    this.camera.updateProjectionMatrix();
+    this.canvas.width = window.innerWidth;
+    this.canvas.height = window.innerHeight;
   }
 
-  private loop = (): void => {
+  private loop = (time: number): void => {
     this.animId = requestAnimationFrame(this.loop);
-    const dt = Math.min(this.clock.getDelta(), 0.05);
-    this.input.update();
+    const dt = Math.min((time - this.lastTime) / 1000, 0.05);
+    this.lastTime = time;
     this.update(dt);
     this.render();
+    this.input.endFrame();
   };
 
   private update(dt: number): void {
@@ -152,129 +138,102 @@ export class Game {
       return;
     }
 
+    this.input.update();
+
     if (this.state.phase === 'dialogue') {
-      if (this.input.interactPressed && this.interactCooldown <= 0) {
+      if (this.input.consumeInteractHeld() && this.interactCooldown <= 0) {
         this.advanceDialogue();
-        this.interactCooldown = 0.3;
+        this.interactCooldown = 0.25;
       }
       this.interactCooldown -= dt;
       return;
     }
 
-    // Panel toggles
-    if (this.input.keys.has('KeyI') && !this.prevKeyI) {
+    if (this.input.consumeKey('KeyI')) {
       this.state.phase = this.state.phase === 'inventory' ? 'playing' : 'inventory';
       this.ui.setPhase(this.state.phase);
     }
-    if (this.input.keys.has('KeyM') && !this.prevKeyM) {
+    if (this.input.consumeKey('KeyM')) {
       this.state.phase = this.state.phase === 'map' ? 'playing' : 'map';
       this.ui.setPhase(this.state.phase);
-      if (this.state.phase === 'map') this.updateMap();
     }
-    if (this.input.keys.has('Escape')) {
-      if (this.state.phase === 'inventory' || this.state.phase === 'map') {
-        this.state.phase = 'playing';
-        this.ui.setPhase('playing');
-      }
+    if (this.input.consumeKey('Escape') && (this.state.phase === 'inventory' || this.state.phase === 'map')) {
+      this.state.phase = 'playing';
+      this.ui.setPhase('playing');
     }
-    this.prevKeyI = this.input.keys.has('KeyI');
-    this.prevKeyM = this.input.keys.has('KeyM');
 
     if (this.state.phase === 'inventory' || this.state.phase === 'map') {
-      if (this.state.phase === 'map') this.updateMap();
       this.ui.updateHUD(this.state);
       return;
     }
 
-    // Camera rotation
-    const md = this.input.consumeMouseDelta();
-    if (this.input.mouseLocked || this.input.isMobile()) {
-      const sens = this.input.isMobile() ? 0 : 0.003;
-      if (!this.input.isMobile()) {
-        this.cameraYaw -= md.x * sens;
-        this.cameraPitch = THREE.MathUtils.clamp(this.cameraPitch - md.y * sens, 0.1, 1.2);
-      }
-    }
-
-    // Movement
-    const speed = this.state.stats.speed * (this.input.sprint && this.state.useStamina(30 * dt) ? 1.6 : 1);
-    let moveX = this.input.moveX;
-    let moveZ = this.input.moveZ;
-
-    if (moveX !== 0 || moveZ !== 0) {
-      const camForward = new THREE.Vector3(-Math.sin(this.cameraYaw), 0, -Math.cos(this.cameraYaw));
-      const camRight = new THREE.Vector3(Math.cos(this.cameraYaw), 0, -Math.sin(this.cameraYaw));
-      const moveDir = new THREE.Vector3()
-        .addScaledVector(camRight, moveX)
-        .addScaledVector(camForward, -moveZ);
-      if (moveDir.lengthSq() > 0) {
-        moveDir.normalize();
-        this.player.position.x += moveDir.x * speed * dt;
-        this.player.position.z += moveDir.z * speed * dt;
-        this.player.yaw = Math.atan2(moveDir.x, moveDir.z);
-        if (this.input.isMobile()) {
-          this.cameraYaw = THREE.MathUtils.lerp(this.cameraYaw, this.player.yaw, 8 * dt);
-        }
-      }
-    }
-
-    this.player.position.copy(
-      resolveCollision(this.player.position, this.world.colliders, 0.5)
-    );
-    this.player.syncMesh();
-
+    this.updateMovement(dt);
     this.state.regenStamina(dt);
     this.updateCombat(dt);
     this.updateEnemies(dt);
     this.updateInteract();
     this.updateBossSpawn();
-    this.updateCamera();
-    this.ui.updateHUD(this.state);
-
-    if (this.player.invincibleTimer > 0) this.player.invincibleTimer -= dt;
+    this.updateFloatingTexts(dt);
     this.attackCooldown -= dt;
     this.interactCooldown -= dt;
+    if (this.player.invincibleTimer > 0) this.player.invincibleTimer -= dt;
+    for (const e of this.enemies) {
+      if (e.hitFlash > 0) e.hitFlash -= dt;
+    }
+    if (this.boss && this.boss.hitFlash > 0) this.boss.hitFlash -= dt;
+    this.ui.updateHUD(this.state);
   }
 
-  private prevKeyI = false;
-  private prevKeyM = false;
+  private updateMovement(dt: number): void {
+    const mx = this.input.moveX;
+    const my = this.input.moveY;
+    if (mx === 0 && my === 0) return;
 
-  private updateCamera(): void {
-    const target = this.player.position.clone().add(new THREE.Vector3(0, 1.5, 0));
-    const offset = new THREE.Vector3(
-      Math.sin(this.cameraYaw) * Math.cos(this.cameraPitch) * this.cameraDistance,
-      Math.sin(this.cameraPitch) * this.cameraDistance,
-      Math.cos(this.cameraYaw) * Math.cos(this.cameraPitch) * this.cameraDistance
+    const sprint = this.input.sprint && this.state.useStamina(30 * dt);
+    const speed = this.state.stats.speed * (sprint ? 1.5 : 1);
+
+    if (Math.abs(mx) > Math.abs(my)) {
+      this.player.dir = mx > 0 ? 'right' : 'left';
+    } else {
+      this.player.dir = my > 0 ? 'down' : 'up';
+    }
+
+    const moved = resolveMovement(
+      this.tiles,
+      this.player.x,
+      this.player.y,
+      mx * speed * dt,
+      my * speed * dt,
+      this.player.radius
     );
-    this.camera.position.copy(target).add(offset);
-    this.camera.lookAt(target);
+    this.player.x = moved.x;
+    this.player.y = moved.y;
   }
 
   private updateCombat(dt: number): void {
-    if (this.attackCooldown > 0) return;
+    if (this.attackCooldown > 0) {
+      if (this.player.attackTimer > 0) this.player.attackTimer -= dt;
+      return;
+    }
 
-    if (this.input.attackPressed && this.state.useStamina(15)) {
+    if (this.input.consumeAttack() && this.state.useStamina(12)) {
       this.player.isAttacking = true;
-      this.player.attackTimer = 0.35;
-      this.attackCooldown = 0.5;
+      this.player.attackTimer = 0.2;
+      this.attackCooldown = 0.45;
 
-      const attackPos = this.player.position.clone();
-      const forward = new THREE.Vector3(Math.sin(this.player.yaw), 0, Math.cos(this.player.yaw));
-      attackPos.addScaledVector(forward, 1.2);
+      const hitbox = getAttackHitbox(this.player);
+      const targets = this.boss && !this.boss.data.dead ? [...this.enemies, this.boss] : [...this.enemies];
 
-      const range = 2.2;
-      const allEnemies = this.boss && !this.boss.data.dead ? [...this.enemies, this.boss] : this.enemies;
-
-      for (const enemy of allEnemies) {
+      for (const enemy of targets) {
         if (enemy.data.dead) continue;
-        const dist = enemy.position.distanceTo(attackPos);
-        if (dist < range) {
+        if (aabbOverlap(hitbox, enemy.x, enemy.y, enemy.data.isBoss ? 20 : 14)) {
           const killed = enemy.takeDamage(this.state.stats.damage);
-          enemy.syncMesh();
+          this.spawnFloat(enemy.x, enemy.y - 20, `-${this.state.stats.damage}`, '#ff6666');
           if (killed) {
             if (enemy.data.isBoss) {
               this.state.bossDefeated = true;
               this.heartstoneActive = true;
+              this.spawnFloat(enemy.x, enemy.y - 36, 'Guardião derrotado!', '#ffdd55');
             } else {
               this.state.killWolf();
             }
@@ -290,102 +249,109 @@ export class Game {
   }
 
   private updateEnemies(dt: number): void {
-    const allEnemies = this.boss && !this.boss.data.dead ? [...this.enemies, this.boss] : this.enemies;
+    const all = this.boss && !this.boss.data.dead ? [...this.enemies, this.boss] : [...this.enemies];
+    const now = performance.now() / 1000;
 
-    for (const enemy of allEnemies) {
+    for (const enemy of all) {
       if (enemy.data.dead) continue;
 
-      const dist = enemy.position.distanceTo(this.player.position);
-      const now = performance.now() / 1000;
+      const dist = Math.hypot(enemy.x - this.player.x, enemy.y - this.player.y);
 
       if (dist < enemy.data.aggroRange) {
-        const dir = this.player.position.clone().sub(enemy.position);
-        dir.y = 0;
-        if (dir.lengthSq() > 0.01) {
-          dir.normalize();
-          if (dist > enemy.data.attackRange) {
-            const next = enemy.position.clone().addScaledVector(dir, enemy.data.speed * dt);
-            enemy.position.copy(resolveCollision(next, this.world.colliders, 0.5));
-            enemy.mesh.rotation.y = Math.atan2(dir.x, dir.z);
-          } else if (now - enemy.data.lastAttack > enemy.data.attackCooldown) {
-            enemy.data.lastAttack = now;
-            if (this.player.invincibleTimer <= 0) {
-              const dead = this.state.takeDamage(enemy.data.damage);
-              this.player.invincibleTimer = 0.8;
-              this.ui.flashDamage();
-              if (dead) {
-                this.state.phase = 'defeat';
-                this.ui.setPhase('defeat');
-              }
+        const dx = this.player.x - enemy.x;
+        const dy = this.player.y - enemy.y;
+        const len = Math.hypot(dx, dy);
+
+        if (len > enemy.data.attackRange) {
+          const moved = resolveMovement(
+            this.tiles,
+            enemy.x,
+            enemy.y,
+            (dx / len) * enemy.data.speed * dt,
+            (dy / len) * enemy.data.speed * dt,
+            enemy.data.isBoss ? 18 : 12
+          );
+          enemy.x = moved.x;
+          enemy.y = moved.y;
+        } else if (now - enemy.data.lastAttack > enemy.data.attackCooldown) {
+          enemy.data.lastAttack = now;
+          if (this.player.invincibleTimer <= 0) {
+            const dead = this.state.takeDamage(enemy.data.damage);
+            this.player.invincibleTimer = 0.7;
+            this.ui.flashDamage();
+            this.spawnFloat(this.player.x, this.player.y - 24, `-${enemy.data.damage}`, '#ff4444');
+            if (dead) {
+              this.state.phase = 'defeat';
+              this.ui.setPhase('defeat');
             }
           }
         }
-      } else if (enemy.data.respawn && dist > 25) {
-        enemy.position.lerp(enemy.homePosition, 2 * dt);
+      } else if (enemy.data.respawn && dist > 200) {
+        enemy.x += (enemy.homeX - enemy.x) * 2 * dt;
+        enemy.y += (enemy.homeY - enemy.y) * 2 * dt;
       }
-
-      enemy.syncMesh();
     }
   }
 
   private updateInteract(): void {
-    const interactRange = 2.5;
-    this.interactTarget = null;
-    let promptText = '';
+    let target: string | null = null;
+    let prompt = '';
 
     for (const npc of this.npcs) {
-      const dist = this.player.position.distanceTo(npc.position);
-      if (dist < interactRange) {
-        this.interactTarget = npc.id;
-        promptText = `[E] Falar com ${npc.name}`;
+      const dist = Math.hypot(this.player.x - npc.x, this.player.y - npc.y);
+      if (dist < 96) {
+        target = npc.id;
+        prompt = `[E] Falar com ${npc.name}`;
         break;
       }
     }
 
-    if (!this.interactTarget) {
-      for (let i = 0; i < this.herbSpots.length; i++) {
-        const h = this.herbSpots[i];
+    if (!target) {
+      for (const h of this.herbs) {
         if (h.collected) continue;
-        const dist = Math.hypot(this.player.position.x - h.x, this.player.position.z - h.z);
-        if (dist < 1.5) {
-          this.interactTarget = `herb_${h.id}`;
-          promptText = '[E] Coletar erva';
+        const dist = Math.hypot(this.player.x - h.x, this.player.y - h.y);
+        if (dist < 28) {
+          target = `herb_${h.id}`;
+          prompt = '[E] Coletar erva';
           break;
         }
       }
     }
 
-    if (!this.interactTarget && this.heartstoneActive) {
-      const dist = this.player.position.distanceTo(this.world.heartstonePos);
-      if (dist < 3) {
-        this.interactTarget = 'heartstone';
-        promptText = '[E] Purificar Pedra-Coração';
+    if (!target && this.heartstoneActive) {
+      const hs = this.props.find((p) => p.type === 'heartstone');
+      if (hs) {
+        const hx = hs.tx * TILE_SIZE + TILE_SIZE / 2;
+        const hy = hs.ty * TILE_SIZE + TILE_SIZE / 2;
+        const dist = Math.hypot(this.player.x - hx, this.player.y - hy);
+        if (dist < 36) {
+          target = 'heartstone';
+          prompt = '[E] Purificar Pedra-Coração';
+        }
       }
     }
 
-    this.ui.showInteractPrompt(!!this.interactTarget, promptText);
+    this.ui.showInteractPrompt(!!target, prompt);
 
-    if (this.input.interactPressed && this.interactTarget && this.interactCooldown <= 0) {
-      this.interactCooldown = 0.4;
-      this.handleInteract(this.interactTarget);
+    if (this.input.consumeInteract() && target && this.interactCooldown <= 0) {
+      this.interactCooldown = 0.35;
+      this.handleInteract(target);
     }
   }
 
   private handleInteract(target: string): void {
-    if (target === 'elder') {
-      this.startElderDialogue();
-    } else if (target === 'healer') {
-      this.startHealerDialogue();
-    } else if (target.startsWith('herb_')) {
+    if (target === 'elder') this.startElderDialogue();
+    else if (target === 'healer') this.startHealerDialogue();
+    else if (target.startsWith('herb_')) {
       const id = target.replace('herb_', '');
-      const spot = this.herbSpots.find((h) => h.id === id);
+      const spot = this.herbs.find((h) => h.id === id);
       if (spot && !spot.collected) {
         spot.collected = true;
-        if (spot.mesh) spot.mesh.visible = false;
         this.state.collectHerb();
+        this.spawnFloat(spot.x, spot.y - 16, '+Erva', '#88ff88');
         if (this.state.getQuest('herbs')?.completed && this.state.herbQuestStarted) {
           this.queueDialogue([
-            { speaker: 'Curandeira Mira', text: 'Excelente! Estas ervas fortaleceram sua vitalidade. (+30 HP máximo)' },
+            { speaker: 'Curandeira Mira', text: 'Excelente! Suas ervas fortaleceram sua vitalidade. (+30 HP máximo)' },
           ]);
         }
       }
@@ -401,16 +367,16 @@ export class Game {
       this.state.wolfQuestStarted = true;
       this.queueDialogue([
         { speaker: 'Ancião Thalen', text: 'Bem-vindo, viajante. A clareira está corrompida... A Pedra-Coração nas ruínas ao norte precisa ser purificada.' },
-        { speaker: 'Ancião Thalen', text: 'Um Guardião sombrio a protege. Derrote-o e toque na pedra. Mas antes, fortaleça-se — elimine os lobos e visite a curandeira Mira.' },
+        { speaker: 'Ancião Thalen', text: 'Um Guardião sombrio a protege. Derrote-o e toque na pedra. Fortaleça-se — elimine os lobos e visite a curandeira Mira.' },
         { speaker: 'Ancião Thalen', text: 'Vá com coragem, herói. O bosque conta com você!' },
       ]);
     } else if (this.state.bossDefeated) {
       this.queueDialogue([
-        { speaker: 'Ancião Thalen', text: 'O Guardião caiu! Agora, toque na Pedra-Coração nas ruínas para completar o ritual.' },
+        { speaker: 'Ancião Thalen', text: 'O Guardião caiu! Toque na Pedra-Coração nas ruínas para completar o ritual.' },
       ]);
     } else {
       this.queueDialogue([
-        { speaker: 'Ancião Thalen', text: 'A corrupção se espalha... Derrote o Guardião nas ruínas ao norte e purifique a Pedra-Coração.' },
+        { speaker: 'Ancião Thalen', text: 'Siga o caminho ao norte até as ruínas. Derrote o Guardião e purifique a Pedra-Coração.' },
       ]);
     }
   }
@@ -419,7 +385,7 @@ export class Game {
     if (!this.state.herbQuestStarted) {
       this.state.herbQuestStarted = true;
       this.queueDialogue([
-        { speaker: 'Curandeira Mira', text: 'Vejo feridas em sua alma, herói. Colete 3 ervas verdes espalhadas pela clareira — elas aumentarão sua resistência.' },
+        { speaker: 'Curandeira Mira', text: 'Colete 3 ervas verdes espalhadas pela clareira — elas aumentarão sua resistência.' },
       ]);
     } else if (this.state.getQuest('herbs')?.completed) {
       this.queueDialogue([
@@ -455,47 +421,163 @@ export class Game {
 
   private updateBossSpawn(): void {
     if (this.bossSpawned) return;
-    const dist = this.player.position.distanceTo(this.world.bossSpawn);
-    if (dist < 25) {
+    if (this.player.y < 22 * TILE_SIZE) {
       this.bossSpawned = true;
-      this.boss = createBoss(this.world.bossSpawn);
-      this.world.scene.add(this.boss.mesh);
+      this.boss = createBoss(30 * TILE_SIZE + 16, 14 * TILE_SIZE + 16);
     }
   }
 
-  private updateMap(): void {
-    this.ui.drawMap(
-      this.player.position.x,
-      this.player.position.z,
-      this.npcs.map((n) => ({
-        x: n.position.x,
-        z: n.position.z,
-        color: n.id === 'elder' ? '#aa88ff' : '#88cc88',
-      })),
-      this.enemies
-        .filter((e) => !e.data.dead)
-        .map((e) => ({ x: e.position.x, z: e.position.z }))
-    );
+  private spawnFloat(x: number, y: number, text: string, color: string): void {
+    this.floatingTexts.push({ x, y, text, life: 1, color });
+  }
+
+  private updateFloatingTexts(dt: number): void {
+    this.floatingTexts = this.floatingTexts.filter((f) => {
+      f.life -= dt;
+      f.y -= 30 * dt;
+      return f.life > 0;
+    });
+  }
+
+  private getCamera(): { x: number; y: number } {
+    const viewW = this.canvas.width;
+    const viewH = this.canvas.height;
+    const mapW = MAP_W * TILE_SIZE;
+    const mapH = MAP_H * TILE_SIZE;
+    let camX = this.player.x - viewW / 2;
+    let camY = this.player.y - viewH / 2;
+    camX = Math.max(0, Math.min(mapW - viewW, camX));
+    camY = Math.max(0, Math.min(mapH - viewH, camY));
+    return { x: camX, y: camY };
   }
 
   private render(): void {
-    // Animate heartstone
-    this.world.scene.traverse((obj) => {
-      if (obj instanceof THREE.Mesh && obj.geometry instanceof THREE.OctahedronGeometry) {
-        obj.rotation.y += 0.01;
-        const mat = obj.material as THREE.MeshLambertMaterial;
-        if (this.state.bossDefeated) {
-          mat.emissive.setHex(0x006622);
-          mat.color.setHex(0x44ff88);
-        }
-      }
-    });
+    if (this.state.phase === 'title' || this.state.phase === 'victory' || this.state.phase === 'defeat') {
+      this.ctx.fillStyle = '#0a0f0a';
+      this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+      return;
+    }
 
-    this.renderer.render(this.world.scene, this.camera);
+    const { x: camX, y: camY } = this.getCamera();
+    const viewW = this.canvas.width;
+    const viewH = this.canvas.height;
+
+    this.ctx.fillStyle = '#1a2a1a';
+    this.ctx.fillRect(0, 0, viewW, viewH);
+
+    drawMapLayer(this.ctx, this.tiles, this.props, camX, camY, viewW, viewH);
+
+    // Herbs
+    for (const h of this.herbs) {
+      if (h.collected) continue;
+      const sx = h.x - camX;
+      const sy = h.y - camY;
+      if (sx > -32 && sx < viewW + 32 && sy > -32 && sy < viewH + 32) {
+        drawSprite(this.ctx, 'herb', sx, sy);
+      }
+    }
+
+    // NPCs
+    for (const npc of this.npcs) {
+      const sx = npc.x - camX;
+      const sy = npc.y - camY;
+      drawSprite(this.ctx, npc.id === 'elder' ? 'elder' : 'healer', sx, sy, 1.25);
+      const near = Math.hypot(this.player.x - npc.x, this.player.y - npc.y) < 96;
+      this.ctx.font = '10px sans-serif';
+      this.ctx.fillStyle = '#e8f5e0';
+      this.ctx.textAlign = 'center';
+      this.ctx.fillText(npc.name.split(' ').pop()!, sx, sy - 20);
+      if (near) {
+        this.ctx.font = 'bold 18px sans-serif';
+        this.ctx.fillStyle = '#ffdd55';
+        this.ctx.fillText('!', sx, sy - 32);
+      }
+    }
+
+    // Enemies
+    const allEnemies = this.boss && !this.boss.data.dead ? [...this.enemies, this.boss] : this.enemies;
+    for (const e of allEnemies) {
+      if (e.data.dead) continue;
+      const sx = e.x - camX;
+      const sy = e.y - camY;
+      if (e.hitFlash > 0) {
+        this.ctx.globalAlpha = 0.5 + Math.sin(e.hitFlash * 40) * 0.5;
+      }
+      drawSprite(this.ctx, e.data.isBoss ? 'boss' : 'wolf', sx, sy);
+      this.ctx.globalAlpha = 1;
+
+      // HP bar for boss
+      if (e.data.isBoss) {
+        const bw = 48;
+        const pct = e.data.hp / e.data.maxHp;
+        this.ctx.fillStyle = '#333';
+        this.ctx.fillRect(sx - bw / 2, sy - 28, bw, 5);
+        this.ctx.fillStyle = '#9933cc';
+        this.ctx.fillRect(sx - bw / 2, sy - 28, bw * pct, 5);
+      }
+    }
+
+    // Player
+    const px = this.player.x - camX;
+    const py = this.player.y - camY;
+    if (this.player.invincibleTimer > 0) {
+      this.ctx.globalAlpha = 0.5 + Math.sin(this.player.invincibleTimer * 20) * 0.3;
+    }
+    drawSprite(this.ctx, this.player.spriteName(), px, py);
+    this.ctx.globalAlpha = 1;
+
+    // Attack slash
+    if (this.player.isAttacking) {
+      this.ctx.save();
+      this.ctx.translate(px, py);
+      const rot: Record<Direction, number> = { down: 0, up: Math.PI, left: -Math.PI / 2, right: Math.PI / 2 };
+      this.ctx.rotate(rot[this.player.dir]);
+      this.ctx.drawImage(getSprite('slash'), -16, -16, 32, 32);
+      this.ctx.restore();
+    }
+
+    // Heartstone glow when active
+    if (this.heartstoneActive) {
+      this.heartstonePulse += 0.05;
+      const hs = this.props.find((p) => p.type === 'heartstone');
+      if (hs) {
+        const sx = hs.tx * TILE_SIZE + TILE_SIZE / 2 - camX;
+        const sy = hs.ty * TILE_SIZE + TILE_SIZE / 2 - camY;
+        this.ctx.strokeStyle = `rgba(136,255,136,${0.4 + Math.sin(this.heartstonePulse) * 0.3})`;
+        this.ctx.lineWidth = 2;
+        this.ctx.beginPath();
+        this.ctx.arc(sx, sy, 20 + Math.sin(this.heartstonePulse) * 4, 0, Math.PI * 2);
+        this.ctx.stroke();
+      }
+    }
+
+    // Floating damage text
+    this.ctx.font = 'bold 14px sans-serif';
+    this.ctx.textAlign = 'center';
+    for (const f of this.floatingTexts) {
+      this.ctx.globalAlpha = f.life;
+      this.ctx.fillStyle = f.color;
+      this.ctx.fillText(f.text, f.x - camX, f.y - camY);
+    }
+    this.ctx.globalAlpha = 1;
+
+    // Minimap when open
+    if (this.state.phase === 'map') {
+      this.ui.drawMinimapFromTiles(
+        this.tiles,
+        this.player.x,
+        this.player.y,
+        this.npcs.map((n) => ({ x: n.x, y: n.y, color: n.id === 'elder' ? '#aa88ff' : '#88cc88' })),
+        allEnemies.filter((e) => !e.data.dead).map((e) => ({
+          x: e.x,
+          y: e.y,
+          boss: e.data.isBoss,
+        }))
+      );
+    }
   }
 
   destroy(): void {
     cancelAnimationFrame(this.animId);
-    this.renderer.dispose();
   }
 }

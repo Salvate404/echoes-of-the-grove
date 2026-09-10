@@ -1,7 +1,7 @@
 {
   "name": "echoes-of-the-grove",
   "private": true,
-  "version": "1.0.0",
+  "version": "2.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -9,11 +9,7 @@
     "preview": "vite preview"
   },
   "devDependencies": {
-    "@types/three": "^0.185.4",
     "typescript": "^5.7.2",
     "vite": "^6.0.3"
-  },
-  "dependencies": {
-    "three": "^0.171.0"
   }
 }

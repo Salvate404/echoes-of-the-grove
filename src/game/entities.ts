@@ -1,128 +1,77 @@
-import * as THREE from 'three';
-import type { EnemyData } from './types';
+export type Direction = 'down' | 'up' | 'left' | 'right';
+
+export interface Vec2 {
+  x: number;
+  y: number;
+}
+
+export interface EnemyData {
+  id: string;
+  hp: number;
+  maxHp: number;
+  damage: number;
+  speed: number;
+  isBoss: boolean;
+  aggroRange: number;
+  attackRange: number;
+  attackCooldown: number;
+  lastAttack: number;
+  dead: boolean;
+  respawn: boolean;
+}
 
 export class PlayerEntity {
-  mesh: THREE.Group;
-  position = new THREE.Vector3(0, 0, 25);
-  yaw = 0;
+  x: number;
+  y: number;
+  dir: Direction = 'down';
+  radius = 10;
   attackTimer = 0;
   invincibleTimer = 0;
   isAttacking = false;
 
-  constructor() {
-    this.mesh = new THREE.Group();
-
-    const body = new THREE.Mesh(
-      new THREE.CapsuleGeometry(0.4, 0.8, 4, 8),
-      new THREE.MeshLambertMaterial({ color: 0x4488cc })
-    );
-    body.position.y = 1;
-    body.castShadow = true;
-    this.mesh.add(body);
-
-    const head = new THREE.Mesh(
-      new THREE.SphereGeometry(0.3, 8, 8),
-      new THREE.MeshLambertMaterial({ color: 0xffcc99 })
-    );
-    head.position.y = 1.7;
-    head.castShadow = true;
-    this.mesh.add(head);
-
-    // Sword
-    const sword = new THREE.Mesh(
-      new THREE.BoxGeometry(0.1, 0.8, 0.05),
-      new THREE.MeshLambertMaterial({ color: 0xaaaaaa })
-    );
-    sword.position.set(0.5, 1.2, 0.3);
-    sword.name = 'sword';
-    this.mesh.add(sword);
-
-    this.mesh.position.copy(this.position);
+  constructor(x: number, y: number) {
+    this.x = x;
+    this.y = y;
   }
 
-  syncMesh(): void {
-    this.mesh.position.copy(this.position);
-    this.mesh.rotation.y = this.yaw;
+  spriteName(): `player_${Direction}` {
+    return `player_${this.dir}`;
   }
 }
 
 export class EnemyEntity {
-  mesh: THREE.Group;
   data: EnemyData;
-  position: THREE.Vector3;
-  homePosition: THREE.Vector3;
-  attackAnim = 0;
+  x: number;
+  y: number;
+  homeX: number;
+  homeY: number;
+  hitFlash = 0;
 
-  constructor(
-    id: string,
-    position: THREE.Vector3,
-    opts: Partial<EnemyData> = {}
-  ) {
-    this.position = position.clone();
-    this.homePosition = position.clone();
+  constructor(id: string, x: number, y: number, opts: Partial<EnemyData> = {}) {
+    this.x = x;
+    this.y = y;
+    this.homeX = x;
+    this.homeY = y;
     this.data = {
       id,
       hp: opts.hp ?? 30,
       maxHp: opts.maxHp ?? opts.hp ?? 30,
       damage: opts.damage ?? 8,
-      speed: opts.speed ?? 4,
+      speed: opts.speed ?? 70,
       isBoss: opts.isBoss ?? false,
-      aggroRange: opts.aggroRange ?? 12,
-      attackRange: opts.attackRange ?? 1.8,
+      aggroRange: opts.aggroRange ?? 140,
+      attackRange: opts.attackRange ?? 28,
       attackCooldown: opts.attackCooldown ?? 1.2,
       lastAttack: 0,
       dead: false,
       respawn: opts.respawn ?? !opts.isBoss,
     };
-
-    this.mesh = new THREE.Group();
-
-    const scale = this.data.isBoss ? 2.5 : 1;
-    const color = this.data.isBoss ? 0x6622aa : 0x555555;
-
-    const body = new THREE.Mesh(
-      new THREE.BoxGeometry(0.8 * scale, 0.6 * scale, 1.2 * scale),
-      new THREE.MeshLambertMaterial({ color })
-    );
-    body.position.y = 0.5 * scale;
-    body.castShadow = true;
-    this.mesh.add(body);
-
-    const head = new THREE.Mesh(
-      new THREE.BoxGeometry(0.5 * scale, 0.5 * scale, 0.6 * scale),
-      new THREE.MeshLambertMaterial({ color: this.data.isBoss ? 0x9933cc : 0x444444 })
-    );
-    head.position.set(0, 0.9 * scale, 0.4 * scale);
-    head.castShadow = true;
-    this.mesh.add(head);
-
-    if (!this.data.isBoss) {
-      // Wolf ears
-      for (const side of [-1, 1]) {
-        const ear = new THREE.Mesh(
-          new THREE.ConeGeometry(0.12, 0.3, 4),
-          new THREE.MeshLambertMaterial({ color: 0x444444 })
-        );
-        ear.position.set(side * 0.2, 1.2, 0.3);
-        this.mesh.add(ear);
-      }
-    }
-
-    this.mesh.position.copy(this.position);
-  }
-
-  syncMesh(): void {
-    if (this.data.dead) {
-      this.mesh.visible = false;
-      return;
-    }
-    this.mesh.visible = true;
-    this.mesh.position.copy(this.position);
   }
 
   takeDamage(amount: number): boolean {
     if (this.data.dead) return false;
     this.data.hp -= amount;
+    this.hitFlash = 0.15;
     if (this.data.hp <= 0) {
       this.data.dead = true;
       this.data.hp = 0;
@@ -133,66 +82,95 @@ export class EnemyEntity {
 }
 
 export class NPCEntity {
-  mesh: THREE.Group;
-  position: THREE.Vector3;
   id: string;
   name: string;
+  x: number;
+  y: number;
 
-  constructor(id: string, name: string, position: THREE.Vector3, robeColor: number) {
+  constructor(id: string, name: string, tx: number, ty: number, tileSize: number) {
     this.id = id;
     this.name = name;
-    this.position = position.clone();
-
-    this.mesh = new THREE.Group();
-
-    const body = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.35, 0.5, 1.2, 8),
-      new THREE.MeshLambertMaterial({ color: robeColor })
-    );
-    body.position.y = 0.8;
-    body.castShadow = true;
-    this.mesh.add(body);
-
-    const head = new THREE.Mesh(
-      new THREE.SphereGeometry(0.28, 8, 8),
-      new THREE.MeshLambertMaterial({ color: 0xffcc99 })
-    );
-    head.position.y = 1.6;
-    this.mesh.add(head);
-
-    if (id === 'elder') {
-      const staff = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.05, 0.05, 1.8, 6),
-        new THREE.MeshLambertMaterial({ color: 0x6a4a2a })
-      );
-      staff.position.set(0.4, 1, 0);
-      this.mesh.add(staff);
-    }
-
-    this.mesh.position.copy(this.position);
+    this.x = tx * tileSize + tileSize / 2;
+    this.y = ty * tileSize + tileSize / 2;
   }
 }
 
-export function createWolfPack(): { id: string; pos: THREE.Vector3 }[] {
-  return [
-    { id: 'wolf1', pos: new THREE.Vector3(-15, 0, -5) },
-    { id: 'wolf2', pos: new THREE.Vector3(10, 0, -15) },
-    { id: 'wolf3', pos: new THREE.Vector3(-5, 0, -20) },
-    { id: 'wolf4', pos: new THREE.Vector3(18, 0, -10) },
-    { id: 'wolf5', pos: new THREE.Vector3(-20, 0, 0) },
-  ];
+export interface HerbSpot {
+  id: string;
+  x: number;
+  y: number;
+  collected: boolean;
 }
 
-export function createBoss(position: THREE.Vector3): EnemyEntity {
-  return new EnemyEntity('boss', position, {
+export function createHerbs(): HerbSpot[] {
+  const spots: [string, number, number][] = [
+    ['h1', 15, 58],
+    ['h2', 45, 55],
+    ['h3', 12, 68],
+    ['h4', 48, 68],
+    ['h5', 30, 52],
+  ];
+  return spots.map(([id, tx, ty]) => ({
+    id,
+    x: tx * 32 + 16,
+    y: ty * 32 + 16,
+    collected: false,
+  }));
+}
+
+export function createWolves(): EnemyEntity[] {
+  const positions: [string, number, number][] = [
+    ['wolf1', 14, 55],
+    ['wolf2', 44, 52],
+    ['wolf3', 22, 48],
+    ['wolf4', 38, 60],
+    ['wolf5', 16, 62],
+  ];
+  return positions.map(([id, tx, ty]) =>
+    new EnemyEntity(id, tx * 32 + 16, ty * 32 + 16, { hp: 30, maxHp: 30, damage: 8, speed: 75 })
+  );
+}
+
+export function createBoss(x: number, y: number): EnemyEntity {
+  return new EnemyEntity('boss', x, y, {
     hp: 150,
     maxHp: 150,
-    damage: 18,
-    speed: 3.5,
+    damage: 15,
+    speed: 55,
     isBoss: true,
-    aggroRange: 20,
-    attackRange: 3,
-    attackCooldown: 1.8,
+    aggroRange: 200,
+    attackRange: 36,
+    attackCooldown: 1.5,
     respawn: false,
   });
+}
+
+export function getAttackHitbox(
+  player: PlayerEntity
+): { x: number; y: number; w: number; h: number } {
+  const reach = 28;
+  const size = 24;
+  switch (player.dir) {
+    case 'down':
+      return { x: player.x - size / 2, y: player.y + 4, w: size, h: reach };
+    case 'up':
+      return { x: player.x - size / 2, y: player.y - reach - 4, w: size, h: reach };
+    case 'left':
+      return { x: player.x - reach - 4, y: player.y - size / 2, w: reach, h: size };
+    case 'right':
+      return { x: player.x + 4, y: player.y - size / 2, w: reach, h: size };
+  }
+}
+
+export function aabbOverlap(
+  a: { x: number; y: number; w: number; h: number },
+  bx: number,
+  by: number,
+  br: number
+): boolean {
+  const closestX = Math.max(a.x, Math.min(bx, a.x + a.w));
+  const closestY = Math.max(a.y, Math.min(by, a.y + a.h));
+  const dx = bx - closestX;
+  const dy = by - closestY;
+  return dx * dx + dy * dy < br * br;
 }
